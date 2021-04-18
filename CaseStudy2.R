@@ -1,0 +1,383 @@
+#Call in Libraries. 
+library(dplyr)
+library(tidyverse)
+library(tidyr)
+library(ggthemes)
+library(naniar)
+library(ggplot2)
+library(class)
+library(caret)
+library(e1071)
+library(plotly)
+library(Hmisc)
+library(regclass)
+library(reshape2)
+library(imputeTS)
+library(corrplot)
+library(olsrr)
+library(MASS)
+library(caret)
+library(e1071)
+library(foreign)
+library(nnet)
+library(gmodels)
+library(vcd)
+library(ltm)
+
+# Import the data.
+csdtrain = read.csv(file.choose(), header = T)
+testAttrition = read.csv(file.choose(), header = T)
+testSalary = read.csv(file.choose(), header = T)
+
+#Add missing variables
+csdtrain$data = "train"
+testAttrition$data = 'noAtt'
+testAttrition$Attrition = 'None'
+testSalary$data = 'noSal'
+testSalary$MonthlyIncome = 0
+
+#Merge datasets for preparation and cleaning
+csd = rbind(csdtrain,testAttrition,testSalary)
+#Verify dimensions
+dim(csd)[1] == dim(csdtrain)[1] + dim(testAttrition)[1] + dim(testSalary)[1]
+
+csdtrain = csdtrain %>% dplyr::select(-data)
+testAttrition = testAttrition %>% dplyr::select(-c(Attrition,data))
+testSalary = testSalary %>% dplyr::select(-c(MonthlyIncome,data))
+
+# Check for missing values.
+gg_miss_var(csd)
+
+
+#     FACTORS CONTRIBUTING TO ATTRITION
+#       STEP ONE: Prepare the dataset.
+#       STEP TWO: Compare the correlation between Attrition the continuous variables.
+#       STEP THREE: Compare the correlation between Attrition and the categorical variables.
+
+
+
+#   STEP ONE: Prepare Dataset.
+#Convert categorical variables to factor variables.
+factors = c("Attrition","BusinessTravel","Department","EducationField","Gender",
+            "JobRole","MaritalStatus","OverTime","Education","JobInvolvement",
+            "JobLevel","JobSatisfaction","PerformanceRating","StockOptionLevel",
+            "Over18","EnvironmentSatisfaction","RelationshipSatisfaction") #Store list of categorical variables.
+csdfactor = csd #Store csd dataframe in object csdf.
+str(csdfactor) #See info of csdf.
+
+for(i in 1:dim(csdfactor)[2]){
+  if(names(csd)[i] %in% factors == T){
+    csdfactor[,i] = factor(csdfactor[,i])
+  }
+}
+
+str(csdfactor) #See info on the data.
+which(sapply(csdfactor, function(x) (is.character(x) | is.factor(x)) & length(unique(x))<2)) #See which variable has less than 2 levels.
+dim(csdfactor) #See dimension of dataset (rows, columns).
+
+#We are dropping Over18, EmployeeCount and StandardHours since they only have one unique value. 
+#We are dropping employee number because we don't need it as it is a unique identifier and we have ID for that.
+csdfactor = csdfactor %>% dplyr::select(-c(Over18,EmployeeCount,EmployeeNumber,StandardHours))
+dim(csdfactor) #Verify there is one less column.
+
+csdfactor$Attrition <- relevel(csdfactor$Attrition, ref = "Yes") #Reorder level of Attrition.
+
+
+#Split the Dataset
+Training = csdfactor[csdfactor$data=='train',]
+Training = Training %>% dplyr::select(-data)
+Training$Attrition = factor(Training$Attrition)
+levels(Training$Attrition)
+
+noAttrition = csdfactor[csdfactor$data=='noAtt',]
+noAttrition = noAttrition %>% dplyr::select(-c(data,Attrition))
+
+noSalary = csdfactor[csdfactor$data=='noSal',]
+noSalary = noSalary %>% dplyr::select(-c(data,MonthlyIncome))
+
+dim(noSalary) == dim(noAttrition)
+
+levels(Training$Attrition)
+contcoorholder = as.integer(c()) #Holder for the correlation values.
+varholder = c() #Holder for the variable names.
+
+
+
+          #FIND FACTORS CONTRIBUTING TO ATTRITION
+#   STEP TWO: Correlation between Attrition and continuous variables.
+# For this we will perform a point-biserial correlation.
+#Performs a biserial correlation test on each variable.
+for(i in 1:dim(Training)[2]){
+  if(is.factor(Training[,i])==F){
+    contcoor = biserial.cor(Training[,i],Training$Attrition, level = 1) #Get the correlation vale.
+    contcoorholder[i] = contcoor #Store the correlation value in the holder.
+    vars = names(Training)[i] #Get the variable names.
+    varholder[i] = vars #Store the variable names in the holder.
+  }
+}
+
+contcoordataframe = na.omit(data.frame(cbind(varholder,contcoorholder))) #Create a dataframe of the correlation values and variable names then remove the missing values.
+names(contcoordataframe) = c("Variable","Correlation") #Change the variable names 
+contcoordataframe
+
+
+names(Training[,names(Training) %in% factors])
+
+#   STEP THREE: Correlation between Attrition and categorical variables.
+# For this we will perform a Person chi-Squared test.
+factors = c("Attrition","BusinessTravel","Department","EducationField","Gender",
+            "JobRole","MaritalStatus","OverTime","Education","JobInvolvement",
+            "JobLevel","JobSatisfaction","PerformanceRating","StockOptionLevel",
+            "EnvironmentSatisfaction","RelationshipSatisfaction")
+catcorrmat <- function(factors, Training) sapply(factors, function(y) 
+  sapply(factors, function(x) assocstats(table(Training[,x], Training[,y]))$cramer)) #Create function that creates a table of their correlation values.
+corrmatcat = data.frame(catcorrmat(factors,Training)) #Call the table.
+
+
+corrmatcatcopy = data.frame(Variable = rownames(corrmatcat)) #Convert the dataframe and make the rownames a variable called Variable.
+cormatcatdf = cbind(corrmatcatcopy,corrmatcat) #Combine the variable and correlation columns.
+row.names(cormatcatdf) = c(1:dim(cormatcatdf)[1]) 
+cormatcatdf = cormatcatdf[order(cormatcatdf$Attrition, decreasing = T),] #Arrange by descending order of Attrition.
+catcoordataframe = cormatcatdf[,1:2] #Select only the first 2 columns.
+names(catcoordataframe) = c("Variable","Correlation") #change the variable names.
+cordf = rbind(catcoordataframe,contcoordataframe) #combine the rows from the continuous correlation dataframe with that of the categorical dataframe.
+cordf$Correlation = round(as.numeric(abs(cordf$Correlation)), 3) #Round to 3 decimal places.
+cordf = cordf %>% arrange(desc(Correlation)) #Arrange by descending order of correlation.
+cordf #Call to see the dataframe.
+
+cordf %>% ggplot(aes(Variable, Correlation)) + 
+  geom_col(color = "orange", 
+           fill = ifelse(cordf$Correlation %in% 
+                           rbind(head(cordf$Correlation,4), 
+                                 tail(cordf$Correlation,3)), "white", "black")) + 
+  geom_text(aes(Variable, Correlation, label = Correlation), color = "black", size = 3, 
+            vjust = ifelse(cordf$Correlation > 0, -0.5, 1.2)) + theme_economist() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, size = 12, hjust = 1)) + 
+  ggtitle("Correlation With Attrition")
+  
+
+
+
+
+          #FIND OTHER TRENDS
+#     OTHER TRENDS
+# Let's look at a correlation table for all the variables
+cormat = round(cor_matrix(Training),3) #Get the correlation between each variable.
+cormat[lower.tri(cormat)] = NA
+cormatdf = data.frame(melt(cormat)) #store the correlation matrix as a dataframe.
+cormatdfDesc = arrange(cormatdf, desc(value)) #Arrange the correlation values in descending order so we can see which variables are most strongly correlated.
+cormatdfDesc %>% filter(value != 1.000) #Call the arranged correlation data frame with perfect correlations removed.
+cormatdfDesc
+
+# Map the correlation data frame for further analysis
+cormap = cormatdfDesc %>% ggplot(aes(Var2, Var1, fill = value)) + geom_tile(color = "white") +
+  geom_text(aes(Var2, Var1, label = value), color = "black", size = 3) +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white",
+                       midpoint = 0, limit = c(-1,1), space = "Lab", 
+                       name="Pearson Correlation") + theme_economist() + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, size = 12, hjust = 1)) +
+  guides(fill = guide_colorbar(barwidth = 12, barheight = 1, 
+                               title.position = "top", title.hjust = 0.5))
+cormap # Call the map to view it.
+
+
+
+
+
+
+#     PREDICT ATTRITION
+#Test Different Models
+#KNN
+#Check to see what the best which K gives the best accuracy
+iterations = 100
+numks = 60
+masterAcc = matrix(nrow = iterations, ncol = numks)
+for(j in 1:iterations){
+  #Split data 70:30 into train and test set
+  splitPerc = .7
+  trainIndices = sample(1:dim(Training)[1], round(splitPerc * dim(Training)[1]))
+  train = Training[trainIndices,]
+  test = Training[-trainIndices,]
+  for(i in 1:numks)
+  {
+    classifications = knn(train[,c(1,2,5,7,12,18:20,22,26:32)],
+                          test[,c(1,2,5,7,12,18:20,22,26:32)],
+                          train$Attrition, prob = TRUE, k = i)
+    table(classifications,test$Attrition)
+    CM = confusionMatrix(table(classifications,test$Attrition))
+    masterAcc[j,i] = CM$overall[1]
+  }
+  
+}
+MeanAccKNN = colMeans(masterAcc)
+plot(seq(1,numks,1),MeanAccKNN, type = "l")
+CM
+summary(MeanAccKNN)
+
+
+#Naive Bayes
+#Check to see what the best accuracy
+iterations = 100
+masterAcc = matrix(nrow = iterations)
+splitPerc = .7 #Training / Test split Percentage
+for(j in 1:iterations){
+  #Split data 70:30 into train and test set
+  splitPerc = .7
+  trainIndices = sample(1:dim(Training)[1], round(splitPerc * dim(Training)[1]))
+  train = Training[trainIndices,]
+  test = Training[-trainIndices,]
+  model = naiveBayes(train[,c(1,2,5,7,12,18:20,22,26:32)],train$Attrition)
+  table(predict(model,test[,c(1,2,5,7,12,18:20,22,26:32)]),test$Attrition)
+  CM = confusionMatrix(table(predict(model,test[,c(1,2,5,7,12,18:20,22,26:32)]),
+                             test$Attrition))
+  masterAcc[j] = CM$overall[1]
+}
+MeanAccNB = colMeans(masterAcc)
+MeanAccNB
+CM
+summary(masterAcc)
+plot(masterAcc, main = "Means of Predictions for Each Iteration", 
+     xlab = "Iteration", ylab = "Accuracy")
+
+
+
+#Logistic Regression
+#Reorder the levels for the factor variables
+Training$Attrition <- relevel(Training$Attrition, ref = "Yes")
+Training$BusinessTravel <- relevel(Training$BusinessTravel, ref = "Non-Travel")
+Training$EducationField <- relevel(Training$EducationField, ref = "Other")
+Training$Department <- relevel(Training$Department, ref = "Sales")
+Training$Gender <- relevel(Training$Gender, ref = "Male")
+Training$JobRole <- relevel(Training$JobRole, ref = "Sales Representative")
+Training$MaritalStatus <- relevel(Training$MaritalStatus, ref = "Single")
+Training$OverTime <- relevel(Training$OverTime, ref = "No")
+
+# Fit the model
+#Attempt 1
+model <- multinom(Attrition~. - ID, data = Training)
+stepAIC(model, direction = "backward", trace = T) #Use backwards elimination
+model <- multinom(formula = Attrition ~ Age + BusinessTravel + DailyRate + 
+                    DistanceFromHome + EnvironmentSatisfaction + HourlyRate + 
+                    JobInvolvement + JobLevel + JobRole + JobSatisfaction + MaritalStatus + 
+                    NumCompaniesWorked + OverTime + RelationshipSatisfaction + 
+                    StockOptionLevel + TotalWorkingYears + TrainingTimesLastYear + 
+                    WorkLifeBalance + YearsAtCompany + YearsInCurrentRole + YearsSinceLastPromotion + 
+                    YearsWithCurrManager, data = Training)
+
+summary(model) 
+
+
+#Get the P value for the variables
+Z <- summary(model)$coefficients/summary(model)$standard.errors
+p <- (1 - pnorm(abs(Z), 0, 1)) * 2
+p <- as.data.frame(p)
+
+#Put P values in a dataframe and see those that are insignificant
+TrainingPval = data.frame(Variables = rownames(p), P_Value = p$p)
+TrainingPval = TrainingPval %>% arrange(P_Value)
+TrainingPval %>% filter(P_Value > 0.05)
+
+
+
+#Attempt 2
+model <- multinom(Attrition~. - ID - YearsAtCompany - DailyRate - 
+                    YearsInCurrentRole, data = Training)
+stepAIC(model, direction = "backward", trace = T) #Use backwards elimination
+model <- multinom(formula = Attrition ~ Age + BusinessTravel + DistanceFromHome + 
+                    EnvironmentSatisfaction + HourlyRate + JobInvolvement + JobLevel + 
+                    JobRole + JobSatisfaction + NumCompaniesWorked + OverTime + 
+                    RelationshipSatisfaction + StockOptionLevel + TotalWorkingYears + 
+                    TrainingTimesLastYear + WorkLifeBalance + YearsSinceLastPromotion + 
+                    YearsWithCurrManager, data = Training)
+summary(model) 
+
+
+
+
+
+iterations = 100
+masterAcc = matrix(nrow = iterations)
+splitPerc = .7 #Training / Test split Percentage
+for(j in 1:iterations){
+  #Split data 70:30 into train and test set
+  splitPerc = .7
+  trainIndices = sample(1:dim(Training)[1], round(splitPerc * dim(Training)[1]))
+  train = Training[trainIndices,]
+  test = Training[-trainIndices,]
+  classifications = predict(model, test)
+  table(classifications,test$Attrition)
+  CM = confusionMatrix(table(classifications,test$Attrition))
+  masterAcc[j] = CM$overall[1]
+}
+MeanAccNB = colMeans(masterAcc)
+MeanAccNB
+which.max(MeanAccNB)
+summary(masterAcc)
+
+CM
+plot(masterAcc, main = "Means of Predictions for Each Iteration", 
+     xlab = "Iteration", ylab = "Accuracy")
+
+
+#PREDICT ATTRITION WITH ACTUAL TEST DATA
+PredAttrition = data.frame(ID = noAttrition$ID, Attrition = predict(model, noAttrition))
+write.csv(PredAttrition,"Case2PredictionsEmmanuel Attrition.csv", row.names = F)
+
+
+
+
+#     PREDICT SALARY
+fit = lm(MonthlyIncome~., data = Training)
+stepAIC(fit, direction = "backward", trace = T) #Use backwards elimination
+fit <- lm(formula = MonthlyIncome ~ ID + BusinessTravel + DailyRate + 
+              JobLevel + JobRole + TotalWorkingYears, data = Training)
+
+summary(fit) 
+
+
+iterations = 100
+masterAcc = matrix(nrow = iterations)
+splitPerc = .7 #Training / Test split Percentage
+for(j in 1:iterations){
+  #Split data 70:30 into train and test set
+  splitPerc = .7
+  trainIndices = sample(1:dim(Training)[1], round(splitPerc * dim(Training)[1]))
+  train = Training[trainIndices,]
+  test = Training[-trainIndices,]
+  classifications = predict(fit, test)
+  table(classifications,test$Attrition)
+  CM = confusionMatrix(table(classifications,test$Attrition))
+  masterAcc[j] = CM$overall[1]
+}
+MeanAccNB = colMeans(masterAcc)
+MeanAccNB
+which.max(MeanAccNB)
+max(MeanAccNB)
+
+CM
+
+PredSalary = data.frame(ID = noSalary$ID, MonthlyIncome = predict(fit, noSalary))
+write.csv(PredSalary,"Case2PredictionsEmmanuel Salary.csv", row.names = F)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
